@@ -30,3 +30,12 @@ def test_classify_mp3_button():
         href="https://tikcdn.io/ssstik/m/encoded",
     )
     assert kind == "mp3"
+
+
+def test_classify_slide_button():
+    kind = main.classify_ssstik_button(
+        text="Download this slide",
+        class_name="pure-button download_link slide",
+        href="https://tikcdn.io/ssstik/aHR0cHM6Ly9leGFtcGxlLmpwZw==",
+    )
+    assert kind == "slide"

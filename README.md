@@ -1,6 +1,6 @@
 # sss-tiktok
 
-Projeto em Python para extrair informacoes de videos do TikTok via [ssstik.io](https://ssstik.io/) e:
+Projeto em Python para extrair informacoes de posts do TikTok (video e album de imagens) via [ssstik.io](https://ssstik.io/) e:
 
 - baixar arquivo (CLI)
 - expor uma API HTTP que retorna resumo completo em JSON
@@ -30,6 +30,7 @@ Prioridade de download:
 
 - `Sem marca d'agua` -> `downloads/tiktok.mp4`
 - `Sem marca d'agua HD` -> `downloads/tiktok_hd.mp4`
+- `Download this slide` (album) -> `downloads/tiktok_slide_XX.jpg`
 - `Download MP3` -> `downloads/tiktok.mp3`
 
 ## API HTTP
@@ -108,7 +109,8 @@ Resposta JSON inclui:
 - validacao da URL TikTok
 - identificadores (`username`, `video_id`)
 - metadados visiveis do video no ssstik (`author`, `description`, `stats`)
-- links dos botoes (`without_watermark`, `without_watermark_hd`, `mp3`)
+- links dos botoes (`without_watermark`, `without_watermark_hd`, `slide`, `mp3`)
+- dados de album (`slide_download_urls`, `slide_image_urls`, `count`)
 - link preferencial e tempo total da operacao
 
 ## Troubleshooting

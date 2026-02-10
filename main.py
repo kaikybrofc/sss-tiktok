@@ -5,7 +5,7 @@ import shlex
 import subprocess
 import time
 import unicodedata
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout, Error as PWError
 
@@ -32,6 +32,11 @@ DOWNLOAD_BUTTON_SELECTORS = {
         "a.download_link.music",
         "a.music",
         "a[href*='mp3']",
+    ],
+    "slide": [
+        "a.download_link.slide",
+        "a.slide",
+        "a[href][class*='slide']",
     ],
 }
 
@@ -84,6 +89,15 @@ def classify_ssstik_button(text: str, class_name: str, href: str) -> str | None:
 
     if "mp3" in combined or "music" in combined:
         return "mp3"
+
+    has_slide_signal = (
+        "download this slide" in text_n
+        or "baixar este slide" in text_n
+        or " slide " in f" {class_n} "
+        or "photomode" in href_n
+    )
+    if has_slide_signal:
+        return "slide"
 
     has_watermark_signal = (
         "sem marca d'agua" in text_n
@@ -169,6 +183,84 @@ def collect_known_button_links(page) -> dict[str, str]:
                 found[kind] = href
     return found
 
+
+def dedupe_keep_order(values: list[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique
+
+
+def collect_slide_links(page) -> list[str]:
+    slide_links: list[str] = []
+    for frame in page.frames:
+        frame_url = frame.url or page.url
+        anchors = collect_all_anchors_in_frame(frame, frame_url)
+        for item in anchors:
+            kind = classify_ssstik_button(item["text"], item["cls"], item["href"])
+            if kind == "slide":
+                slide_links.append(item["abs_href"])
+    return dedupe_keep_order(slide_links)
+
+
+def collect_slide_images_in_frame(frame, page_url: str) -> list[str]:
+    try:
+        images = frame.eval_on_selector_all(
+            "#mainpicture img[data-splide-lazy], #mainpicture img[src], .splide__slide img[data-splide-lazy], .splide__slide img[src]",
+            """els => els.map(img => ({
+                lazy: img.getAttribute('data-splide-lazy') || '',
+                src: img.getAttribute('src') || ''
+            }))""",
+        )
+    except PWError:
+        return []
+
+    result: list[str] = []
+    for image in images:
+        candidate = (image.get("lazy") or "").strip() or (image.get("src") or "").strip()
+        if not candidate:
+            continue
+        abs_url = urljoin(page_url, candidate)
+        if "tikcdn.io/ssstik/s/" in abs_url or "photomode" in abs_url:
+            result.append(abs_url)
+    return result
+
+
+def collect_slide_images(page) -> list[str]:
+    urls: list[str] = []
+    for frame in page.frames:
+        frame_url = frame.url or page.url
+        urls.extend(collect_slide_images_in_frame(frame, frame_url))
+    return dedupe_keep_order(urls)
+
+
+def collect_album_assets(page, timeout_ms: int = 8_000) -> dict[str, list[str]]:
+    deadline = time.time() + (timeout_ms / 1000)
+    slide_links: list[str] = []
+    image_urls: list[str] = []
+    stable_rounds = 0
+    previous_total = 0
+    while time.time() < deadline:
+        slide_links = dedupe_keep_order(slide_links + collect_slide_links(page))
+        image_urls = dedupe_keep_order(image_urls + collect_slide_images(page))
+        current_total = len(slide_links) + len(image_urls)
+        if current_total > 0 and current_total == previous_total:
+            stable_rounds += 1
+        else:
+            stable_rounds = 0
+        previous_total = current_total
+        if stable_rounds >= 2:
+            break
+        page.wait_for_timeout(400)
+    return {
+        "slide_links": slide_links,
+        "image_urls": image_urls,
+    }
+
 def find_download_links(page, timeout_ms: int = 60_000) -> dict[str, str]:
     deadline = time.time() + (timeout_ms / 1000)
     debug_candidates: list[str] = []
@@ -182,6 +274,8 @@ def find_download_links(page, timeout_ms: int = 60_000) -> dict[str, str]:
 
         if {"hd", "nowm", "mp3"}.issubset(found):
             return found
+        if "slide" in found and not any(kind in found for kind in ("hd", "nowm", "mp3")):
+            return found
 
         anchors: list[dict[str, str]] = []
         for frame in page.frames:
@@ -194,6 +288,8 @@ def find_download_links(page, timeout_ms: int = 60_000) -> dict[str, str]:
                 found[kind] = item["abs_href"]
 
         if {"hd", "nowm", "mp3"}.issubset(found):
+            return found
+        if "slide" in found and not any(kind in found for kind in ("hd", "nowm", "mp3")):
             return found
 
         debug_candidates = [
@@ -222,6 +318,13 @@ def wait_for_download_buttons(page, timeout_ms: int = 45_000):
         "Os botoes de download do ssstik nao apareceram no tempo limite. "
         "O site pode ter acionado anti-bot/reCAPTCHA."
     )
+
+
+def infer_image_extension(url: str) -> str:
+    suffix = pathlib.PurePosixPath(urlparse(url).path.lower()).suffix
+    if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+        return suffix
+    return ".jpg"
 
 def main(tiktok_url: str, headless: bool = True):
     with sync_playwright() as p:
@@ -259,32 +362,61 @@ def main(tiktok_url: str, headless: bool = True):
         wait_for_download_buttons(page, timeout_ms=45_000)
 
         links = find_download_links(page, timeout_ms=60_000)
+        album_assets = collect_album_assets(page, timeout_ms=8_000)
         print("Links encontrados:")
         print(" - Sem marca d'agua HD:", links.get("hd", "(nao encontrado)"))
         print(" - Sem marca d'agua:", links.get("nowm", "(nao encontrado)"))
         print(" - Download MP3:", links.get("mp3", "(nao encontrado)"))
+        print(" - Download slide:", links.get("slide", "(nao encontrado)"))
+        print(" - Total de imagens detectadas no album:", len(album_assets["image_urls"]))
 
-        chosen_kind = "nowm" if "nowm" in links else "hd" if "hd" in links else "mp3"
-        href = links[chosen_kind]
+        chosen_kind = (
+            "nowm"
+            if "nowm" in links
+            else "hd"
+            if "hd" in links
+            else "mp3"
+            if "mp3" in links
+            else "slide"
+        )
+        href = links.get(chosen_kind)
+        if chosen_kind == "slide":
+            album_urls = album_assets["image_urls"] or album_assets["slide_links"]
+            if not album_urls and links.get("slide"):
+                album_urls = [links["slide"]]
+            if not album_urls:
+                raise RuntimeError("Conteudo de album detectado, mas nenhuma imagem foi encontrada.")
+            href = album_urls[0]
         print("Link escolhido:", href)
 
-        if chosen_kind == "mp3":
+        if chosen_kind == "slide":
+            for index, album_url in enumerate(album_urls, start=1):
+                ext = infer_image_extension(album_url)
+                name = f"tiktok_slide_{index:02d}{ext}" if len(album_urls) > 1 else f"tiktok_slide{ext}"
+                out = pathlib.Path("downloads") / name
+                download_file(album_url, out)
+                print(f"Imagem {index}/{len(album_urls)} salva em:", out.resolve())
+        elif chosen_kind == "mp3":
             out = pathlib.Path("downloads") / "tiktok.mp3"
+            download_file(href, out)
+            print("Salvo em:", out.resolve())
         elif chosen_kind == "hd":
             out = pathlib.Path("downloads") / "tiktok_hd.mp4"
+            download_file(href, out)
+            print("Salvo em:", out.resolve())
         else:
             out = pathlib.Path("downloads") / "tiktok.mp4"
-        download_file(href, out)
-        print("Salvo em:", out.resolve())
+            download_file(href, out)
+            print("Salvo em:", out.resolve())
 
         browser.close()
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Baixa o MP4 de um video do TikTok via ssstik.io."
+        description="Baixa video ou imagens de post TikTok via ssstik.io."
     )
-    parser.add_argument("url", help="URL do video do TikTok (use aspas se tiver '&').")
+    parser.add_argument("url", help="URL do post TikTok (video/photo; use aspas se tiver '&').")
     return parser.parse_args(argv)
 
 if __name__ == "__main__":

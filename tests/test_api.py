@@ -11,6 +11,11 @@ def test_validate_tiktok_url_accepts_full_video_url():
     assert validate_tiktok_url(url) is True
 
 
+def test_validate_tiktok_url_accepts_photo_url():
+    url = "https://www.tiktok.com/@user/photo/7592044461266423047"
+    assert validate_tiktok_url(url) is True
+
+
 def test_validate_tiktok_url_rejects_non_tiktok():
     assert validate_tiktok_url("https://example.com/video/123") is False
 
@@ -19,6 +24,16 @@ def test_extract_tiktok_identifiers_from_full_url():
     data = extract_tiktok_identifiers("https://www.tiktok.com/@john/video/7592044461266423047")
     assert data["username"] == "john"
     assert data["video_id"] == "7592044461266423047"
+    assert data["post_type"] == "video"
+    assert data["post_id"] == "7592044461266423047"
+
+
+def test_extract_tiktok_identifiers_from_photo_url():
+    data = extract_tiktok_identifiers("https://www.tiktok.com/@john/photo/7592044461266423047")
+    assert data["username"] == "john"
+    assert data["video_id"] is None
+    assert data["post_type"] == "photo"
+    assert data["post_id"] == "7592044461266423047"
 
 
 def test_parse_compact_number():

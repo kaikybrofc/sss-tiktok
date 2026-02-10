@@ -10,11 +10,18 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 from playwright.sync_api import Error as PWError, TimeoutError as PWTimeout, sync_playwright
 
-from main import DEFAULT_USER_AGENT, SSSTIK_URL, find_download_links, launch_chromium, wait_for_download_buttons
+from main import (
+    DEFAULT_USER_AGENT,
+    SSSTIK_URL,
+    collect_album_assets,
+    find_download_links,
+    launch_chromium,
+    wait_for_download_buttons,
+)
 
 
 class ExtractRequest(BaseModel):
-    url: str = Field(..., description="TikTok video URL")
+    url: str = Field(..., description="TikTok post URL (video/photo)")
     timeout_seconds: int = Field(default=60, ge=20, le=180)
 
 
@@ -27,6 +34,7 @@ class ExtractResponse(BaseModel):
     tiktok: dict
     page: dict
     video: dict
+    album: dict
     download_buttons: dict
     preferred_download: dict
     timing: dict
@@ -34,8 +42,8 @@ class ExtractResponse(BaseModel):
 
 app = FastAPI(
     title="SSSTik TikTok Extractor API",
-    version="1.0.1",
-    description="Recebe link do TikTok e retorna links dos botoes do ssstik + metadados do video em JSON.",
+    version="1.1.0",
+    description="Recebe link do TikTok e retorna links dos botoes do ssstik + metadados do post em JSON.",
 )
 
 
@@ -74,8 +82,8 @@ def validate_tiktok_url(url: str) -> bool:
     if not host.endswith("tiktok.com"):
         return False
 
-    # Aceita formato completo e links compartilhados/encurtados.
-    if "/video/" in parsed.path or host in {"vm.tiktok.com", "vt.tiktok.com"}:
+    # Aceita formato completo de video/photo e links compartilhados/encurtados.
+    if "/video/" in parsed.path or "/photo/" in parsed.path or host in {"vm.tiktok.com", "vt.tiktok.com"}:
         return True
     return False
 
@@ -87,16 +95,29 @@ def extract_tiktok_identifiers(url: str) -> dict:
         "path": parsed.path,
         "username": None,
         "video_id": None,
+        "post_type": None,
+        "post_id": None,
     }
-    match = re.search(r"/@([^/]+)/video/(\d+)", parsed.path)
+    match = re.search(r"/@([^/]+)/(video|photo)/(\d+)", parsed.path)
     if match:
         result["username"] = match.group(1)
-        result["video_id"] = match.group(2)
+        result["post_type"] = match.group(2)
+        result["post_id"] = match.group(3)
+        if result["post_type"] == "video":
+            result["video_id"] = result["post_id"]
         return result
 
     video_match = re.search(r"/video/(\d+)", parsed.path)
     if video_match:
         result["video_id"] = video_match.group(1)
+        result["post_type"] = "video"
+        result["post_id"] = video_match.group(1)
+        return result
+
+    photo_match = re.search(r"/photo/(\d+)", parsed.path)
+    if photo_match:
+        result["post_type"] = "photo"
+        result["post_id"] = photo_match.group(1)
     return result
 
 
@@ -118,17 +139,19 @@ def _extract_video_details_from_page(page) -> dict:
           );
           const statsRaw = statNodes.map(n => (n.textContent || '').trim());
 
-          const buttons = {};
-          const links = root.querySelectorAll('#dl_btns a.download_link, a.download_link');
-          links.forEach((a) => {
-            const cls = a.className || '';
-            let key = null;
-            if (cls.includes('without_watermark_hd')) key = 'hd';
-            else if (cls.includes('without_watermark')) key = 'nowm';
-            else if (cls.includes('music')) key = 'mp3';
-            if (!key) return;
+            const buttons = {};
+            const links = root.querySelectorAll('#dl_btns a.download_link, a.download_link');
+            links.forEach((a) => {
+              const cls = a.className || '';
+              const txt = (a.textContent || '').toLowerCase();
+              let key = null;
+              if (cls.includes('without_watermark_hd')) key = 'hd';
+              else if (cls.includes('without_watermark')) key = 'nowm';
+              else if (cls.includes('music')) key = 'mp3';
+              else if (cls.includes('slide') || txt.includes('slide')) key = 'slide';
+              if (!key) return;
 
-            buttons[key] = {
+              buttons[key] = {
               text: (a.textContent || '').trim().replace(/\\s+/g, ' '),
               href: a.getAttribute('href') || null,
               data_directurl: a.getAttribute('data-directurl') || null,
@@ -165,6 +188,7 @@ def _build_download_buttons_payload(found_links: dict, page_buttons: dict) -> di
         "nowm": "without_watermark",
         "hd": "without_watermark_hd",
         "mp3": "mp3",
+        "slide": "slide",
     }
     payload = {}
     for source_key, public_key in mapping.items():
@@ -213,6 +237,7 @@ def scrape_ssstik_summary(tiktok_url: str, timeout_seconds: int = 60) -> dict:
 
         wait_for_download_buttons(page, timeout_ms=timeout_seconds * 1000)
         links = find_download_links(page, timeout_ms=timeout_seconds * 1000)
+        album_assets = collect_album_assets(page, timeout_ms=min(12_000, timeout_seconds * 1000))
         page_data = _extract_video_details_from_page(page)
 
         browser.close()
@@ -226,9 +251,16 @@ def scrape_ssstik_summary(tiktok_url: str, timeout_seconds: int = 60) -> dict:
     }
 
     button_payload = _build_download_buttons_payload(links, page_data.get("buttons", {}))
-    preferred_key = "without_watermark" if button_payload["without_watermark"]["available"] else (
-        "without_watermark_hd" if button_payload["without_watermark_hd"]["available"] else "mp3"
-    )
+    preferred_key = "mp3"
+    for candidate in ["without_watermark", "without_watermark_hd", "slide", "mp3"]:
+        if button_payload[candidate]["available"]:
+            preferred_key = candidate
+            break
+
+    slide_download_urls = album_assets.get("slide_links", [])
+    slide_image_urls = album_assets.get("image_urls", [])
+    if not slide_download_urls and button_payload["slide"]["url"]:
+        slide_download_urls = [button_payload["slide"]["url"]]
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     identifiers = extract_tiktok_identifiers(tiktok_url)
@@ -251,6 +283,11 @@ def scrape_ssstik_summary(tiktok_url: str, timeout_seconds: int = 60) -> dict:
             "description": page_data.get("description"),
             "stats": stats,
         },
+        "album": {
+            "count": max(len(slide_download_urls), len(slide_image_urls)),
+            "slide_download_urls": slide_download_urls,
+            "slide_image_urls": slide_image_urls,
+        },
         "download_buttons": button_payload,
         "preferred_download": {
             "kind": preferred_key,
@@ -271,7 +308,7 @@ def health() -> dict:
 @app.get("/extract", response_model=ExtractResponse)
 def extract_get(url: str = Query(...), timeout_seconds: int = Query(default=60, ge=20, le=180)):
     if not validate_tiktok_url(url):
-        raise HTTPException(status_code=422, detail="URL invalida. Informe um link do TikTok.")
+        raise HTTPException(status_code=422, detail="URL invalida. Informe um link de video/photo do TikTok.")
     try:
         return scrape_ssstik_summary(url, timeout_seconds=timeout_seconds)
     except PWError as exc:
@@ -283,7 +320,7 @@ def extract_get(url: str = Query(...), timeout_seconds: int = Query(default=60, 
 @app.post("/extract", response_model=ExtractResponse)
 def extract_post(payload: ExtractRequest):
     if not validate_tiktok_url(payload.url):
-        raise HTTPException(status_code=422, detail="URL invalida. Informe um link do TikTok.")
+        raise HTTPException(status_code=422, detail="URL invalida. Informe um link de video/photo do TikTok.")
     try:
         return scrape_ssstik_summary(payload.url, timeout_seconds=payload.timeout_seconds)
     except PWError as exc:
