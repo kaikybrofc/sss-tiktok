@@ -1,12 +1,14 @@
 # sss-tiktok
 
-Script em Python para baixar video (sem marca d'agua, HD, ou MP3) via [ssstik.io](https://ssstik.io/) a partir de uma URL do TikTok.
+Projeto em Python para extrair informacoes de videos do TikTok via [ssstik.io](https://ssstik.io/) e:
+
+- baixar arquivo (CLI)
+- expor uma API HTTP que retorna resumo completo em JSON
 
 ## Requisitos
 
 - Python 3.10+
 - `pip`
-- Linux/macOS/Windows
 
 ## Instalacao
 
@@ -18,31 +20,62 @@ pip install -r requirements.txt
 
 O Chromium do Playwright e instalado automaticamente na primeira execucao, se necessario.
 
-## Uso
+## CLI (download)
 
 ```bash
 python3 main.py "https://www.tiktok.com/@user/video/123?is_from_webapp=1&sender_device=pc"
 ```
 
-Saida padrao:
+Prioridade de download:
 
-- arquivo salvo em `downloads/tiktok.mp4` (prioridade: sem marca d'agua)
-- fallback para `downloads/tiktok_hd.mp4`
-- fallback final para `downloads/tiktok.mp3`
+- `Sem marca d'agua` -> `downloads/tiktok.mp4`
+- `Sem marca d'agua HD` -> `downloads/tiktok_hd.mp4`
+- `Download MP3` -> `downloads/tiktok.mp3`
 
-## Como funciona
+## API HTTP
 
-1. Abre o `ssstik.io/pt-1` com Playwright em modo headless.
-2. Envia a URL do TikTok no formulario.
-3. Localiza os botoes de download (`without_watermark`, `without_watermark_hd`, `music`).
-4. Baixa o arquivo escolhido com `requests`.
+Iniciar servidor:
+
+```bash
+python3 api.py --host 0.0.0.0 --port 8000
+```
+
+Healthcheck:
+
+```bash
+curl "http://127.0.0.1:8000/health"
+```
+
+Extracao (GET):
+
+```bash
+curl -G "http://127.0.0.1:8000/extract" \
+  --data-urlencode "url=https://www.tiktok.com/@user/video/123?is_from_webapp=1&sender_device=pc" \
+  --data-urlencode "timeout_seconds=60"
+```
+
+Extracao (POST):
+
+```bash
+curl -X POST "http://127.0.0.1:8000/extract" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://www.tiktok.com/@user/video/123?is_from_webapp=1&sender_device=pc","timeout_seconds":60}'
+```
+
+Resposta JSON inclui:
+
+- validacao da URL TikTok
+- identificadores (`username`, `video_id`)
+- metadados visiveis do video no ssstik (`author`, `description`, `stats`)
+- links dos botoes (`without_watermark`, `without_watermark_hd`, `mp3`)
+- link preferencial e tempo total da operacao
 
 ## Troubleshooting
 
-- Se a URL tiver `&`, use sempre entre aspas.
+- Se a URL tiver `&`, use aspas no shell.
 - Se o site ativar anti-bot/reCAPTCHA, tente novamente depois de alguns minutos.
-- Se mudar o HTML do ssstik, atualize os seletores em `main.py`.
+- Se mudar o HTML do ssstik, ajuste seletores em `main.py` e `api.py`.
 
 ## Aviso
 
-Use somente para conteudo que voce tem permissao para baixar e reutilizar.
+Use somente para conteudo que voce possui permissao para baixar e processar.
