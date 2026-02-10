@@ -9,6 +9,16 @@ Projeto em Python para extrair informacoes de posts do TikTok (video e album de 
 
 - Python 3.10+
 - `pip`
+- Linux (testado apenas em ambiente Linux Ubuntu 24.04 x86_64)
+
+## Compatibilidade
+
+- Este projeto foi testado somente em Linux.
+- Ambiente de referencia do teste:
+
+```bash
+Linux 6.14.0-37-generic #37~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Thu Nov 20 10:25:38 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
+```
 
 ## Instalacao
 
@@ -64,6 +74,8 @@ curl -X POST "http://127.0.0.1:8000/extract" \
 ```
 
 ## Rodando em segundo plano com systemd
+
+> Aviso: esta configuracao depende de `systemd` (`systemctl --user`) e so se aplica em sistemas Linux com `systemd` ativo.
 
 1. Copie o unit file para o `systemd` de usuario:
 
