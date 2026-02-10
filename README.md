@@ -62,6 +62,47 @@ curl -X POST "http://127.0.0.1:8000/extract" \
   -d '{"url":"https://www.tiktok.com/@user/video/123?is_from_webapp=1&sender_device=pc","timeout_seconds":60}'
 ```
 
+## Rodando em segundo plano com systemd
+
+1. Copie o unit file para o `systemd` de usuario:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/systemd/sss-tiktok-api.service ~/.config/systemd/user/
+```
+
+2. (Opcional) sobrescreva configuracoes em `~/.config/sss-tiktok-api.env`:
+
+```bash
+cat > ~/.config/sss-tiktok-api.env <<'EOF'
+PROJECT_DIR=/home/kaiky/Área de trabalho/sss-tiktok
+HOST=0.0.0.0
+PORT=8000
+EOF
+```
+
+3. Ative e inicie o servico:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now sss-tiktok-api.service
+```
+
+4. Comandos uteis:
+
+```bash
+systemctl --user status sss-tiktok-api.service
+systemctl --user restart sss-tiktok-api.service
+systemctl --user stop sss-tiktok-api.service
+journalctl --user -u sss-tiktok-api.service -f
+```
+
+5. Para manter rodando mesmo sem login na sessao:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
 Resposta JSON inclui:
 
 - validacao da URL TikTok
